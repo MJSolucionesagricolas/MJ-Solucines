@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Notion Lite Clon</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Estilos básicos para la app */
+        body {
+            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* Estilos para el modal */
+        #messageBox {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 antialiased text-gray-800">
+
+    <div id="root"></div>
+    <div id="messageBox" class="hidden"></div>
+
+    <script type="module">
+        // Importaciones de Firebase desde su CDN
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Establece el nivel de registro para depuración
+        setLogLevel('debug');
+
+        // --- VARIABLES GLOBALES ---
+        // VITAL: DEBES REEMPLAZAR EL OBJETO COMPLETO ABAJO con tu configuración de Firebase.
+        // Cópialo de tu Consola de Firebase en: Configuración del proyecto -> Tus aplicaciones.
+        const firebaseConfig = {
+            apiKey: "AIzaSyCs9L4aKNu_uS7AVe3b3jkJ2VEHQGak0gg",
+            authDomain: "mj-soluciones-agricolas.firebaseapp.com",
+            projectId: "mj-soluciones-agricolas",
+            storageBucket: "mj-soluciones-agricolas.firebasestorage.app",
+            messagingSenderId: "383233579496",
+            appId: "1:383233579496:web:69d8c6e0dc9e18d9b32c5d"
+        };
+        const appId = firebaseConfig.projectId;
+
+        let app, auth, db;
+        let currentUser = null;
+        let view = 'loading'; // 'loading', 'login', 'pages', 'editor'
+        let userPages = [];
+        let selectedPage = null;
+        let pageBlocks = [];
+        let pageListenerUnsubscribe = null;
+        let blocksListenerUnsubscribe = null;
+
+        // Referencia a los elementos raíz del DOM
+        const root = document.getElementById('root');
+        const messageBox = document.getElementById('messageBox');
+
+        // --- MANEJADORES DE ESTADO Y VISTA ---
+        function setView(newView, data = null) {
+            // Limpia los listeners de la página y los bloques al cambiar de vista
+            if (pageListenerUnsubscribe) {
+                pageListenerUnsubscribe();
+                pageListenerUnsubscribe = null;
+            }
+            if (blocksListenerUnsubscribe) {
+                blocksListenerUnsubscribe();
+                blocksListenerUnsubscribe = null;
+            }
+            
+            view = newView;
+            if (newView === 'editor' && data) {
+                selectedPage = data;
+                // Inicia los listeners específicos para la página seleccionada
+                startPageListeners();
+            } else {
+                selectedPage = null;
+                pageBlocks = [];
+            }
+            render();
+        }
+
+        // --- UI DE MENSAJES Y MODAL ---
+        function renderMessageBox(message, type = 'info', onConfirm = null, onInput = null) {
+            let bgColor = 'bg-blue-500';
+            let title = 'Información';
+            let showConfirmBtn = onConfirm !== null;
+            let showInput = onInput !== null;
+
+            if (type === 'error') {
+                bgColor = 'bg-red-500';
+                title = 'Error';
+            } else if (type === 'confirm') {
+                bgColor = 'bg-yellow-500';
+                title = 'Confirmación';
+            } else if (type === 'input') {
+                bgColor = 'bg-blue-500';
+                title = 'Nueva página';
+                showConfirmBtn = true;
+            }
+
+            messageBox.className = `${bgColor} p-6 rounded-xl shadow-2xl text-white max-w-sm text-center flex flex-col items-center gap-4`;
+            messageBox.innerHTML = `
+                <h3 class="text-xl font-bold">${title}</h3>
+                <p>${message}</p>
+                ${showInput ? `<input type="text" id="modalInput" placeholder="Introduce el título" class="w-full px-4 py-2 mt-2 rounded-md text-gray-800" />` : ''}
+                <div class="flex gap-4 mt-2">
+                    <button id="closeMsgBtn" class="bg-white text-gray-800 font-semibold py-2 px-4 rounded-md hover:bg-gray-200 transition duration-300">Aceptar</button>
+                    ${showConfirmBtn ? `<button id="confirmMsgBtn" class="bg-white text-red-500 font-semibold py-2 px-4 rounded-md hover:bg-red-100 transition duration-300">Confirmar</button>` : ''}
+                </div>
+            `;
+            messageBox.classList.remove('hidden');
+
+            document.getElementById('closeMsgBtn').addEventListener('click', () => {
+                messageBox.classList.add('hidden');
+                onConfirm && onConfirm(false); // Llama al callback con false si se cancela
+                onInput && onInput(false);
+            });
+
+            if (showConfirmBtn || showInput) {
+                const confirmBtn = document.getElementById('confirmMsgBtn');
+                if (showInput) {
+                    confirmBtn.textContent = 'Crear';
+                    confirmBtn.className = 'bg-white text-blue-500 font-semibold py-2 px-4 rounded-md hover:bg-blue-100 transition duration-300';
+                }
+                confirmBtn.addEventListener('click', () => {
+                    messageBox.classList.add('hidden');
+                    if (onInput) {
+                        const inputValue = document.getElementById('modalInput').value;
+                        onInput(inputValue);
+                    } else if (onConfirm) {
+                        onConfirm(true); // Llama al callback con true si se confirma
+                    }
+                });
+            }
+        }
+
+        function hideMessageBox() {
+            messageBox.classList.add('hidden');
+        }
+
+        // --- LÓGICA DE FIREBASE ---
+        function initFirebase() {
+            try {
+                console.log("Configuración de Firebase:", firebaseConfig);
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                console.log("Firebase inicializado.");
+
+                onAuthStateChanged(auth, (user) => {
+                    currentUser = user;
+                    if (currentUser) {
+                        setView('pages');
+                        startPagesListener();
+                    } else {
+                        setView('login');
+                    }
+                });
+
+            } catch (error) {
+                console.error("Error al inicializar Firebase:", error);
+                renderMessageBox(`Error al inicializar Firebase. Posiblemente la configuración de tu proyecto sea incorrecta o el servicio no esté habilitado.`, 'error');
+            }
+        }
+        
+        function startPagesListener() {
+            if (!db || !currentUser) return;
+            const pagesQuery = query(collection(db, `artifacts/${appId}/users/${currentUser.uid}/pages`));
+            onSnapshot(pagesQuery, (snapshot) => {
+                userPages = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                console.log("Páginas del usuario actualizadas:", userPages);
+                render();
+            });
+        }
+
+        function startPageListeners() {
+            if (!db || !selectedPage) return;
+
+            // Listener para los detalles de la página
+            pageListenerUnsubscribe = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'pages', selectedPage.id), (docSnapshot) => {
+                if (docSnapshot.exists()) {
+                    selectedPage = { id: docSnapshot.id, ...docSnapshot.data() };
+                    render();
+                } else {
+                    // Si la página se borra desde otro usuario, volver a la vista de páginas
+                    setView('pages');
+                }
+            });
+
+            // Listener para los bloques de la página
+            const blocksQuery = query(collection(db, `artifacts/${appId}/public/data/pages/${selectedPage.id}/blocks`));
+            blocksListenerUnsubscribe = onSnapshot(blocksQuery, (snapshot) => {
+                pageBlocks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                pageBlocks.sort((a, b) => a.order - b.order);
+                render();
+            });
+        }
+
+        // --- LÓGICA DE LA APLICACIÓN ---
+        const handleLogin = async (e) => {
+            e.preventDefault();
+            const email = e.target.loginEmail.value;
+            const password = e.target.loginPassword.value;
+            try {
+                await signInWithEmailAndPassword(auth, email, password);
+                setView('pages');
+            } catch (error) {
+                renderMessageBox(`Error al iniciar sesión: ${error.message}`, 'error');
+            }
+        };
+
+        const handleRegister = async (e) => {
+            e.preventDefault();
+            const email = e.target.newEmail.value;
+            const password = e.target.newPassword.value;
+            try {
+                await createUserWithEmailAndPassword(auth, email, password);
+                renderMessageBox("¡Registro exitoso! Ahora inicia sesión.");
+            } catch (error) {
+                renderMessageBox(`Error al registrarse: ${error.message}`, 'error');
+            }
+        };
+
+        const handleLogout = async () => {
+            try {
+                await signOut(auth);
+                setView('login');
+                selectedPage = null;
+            } catch (error) {
+                renderMessageBox(`Error al cerrar sesión: ${error.message}`, 'error');
+            }
+        };
+        
+        const handleNewPage = () => {
+            if (!currentUser || !db) {
+                console.error("Error: Usuario no autenticado o DB no inicializada.");
+                renderMessageBox("Necesitas iniciar sesión para crear una página.", 'error');
+                return;
+            }
+            renderMessageBox("Por favor, introduce el título de la nueva página:", 'input', null, async (pageTitle) => {
+                if (!pageTitle || pageTitle.trim() === '') {
+                    renderMessageBox("El título no puede estar vacío.", 'error');
+                    return;
+                }
+                try {
+                    const privatePageRef = collection(db, `artifacts/${appId}/users/${currentUser.uid}/pages`);
+                    const newPrivatePage = await addDoc(privatePageRef, {
+                        title: pageTitle,
+                        ownerId: currentUser.uid,
+                        createdAt: new Date(),
+                    });
+
+                    const publicPageRef = doc(db, 'artifacts', appId, 'public', 'data', 'pages', newPrivatePage.id);
+                    await setDoc(publicPageRef, {
+                        title: pageTitle,
+                        ownerId: currentUser.uid,
+                        collaborators: [currentUser.uid]
+                    });
+
+                } catch (error) {
+                    console.error("Error al crear la página:", error);
+                    renderMessageBox(`Error al crear la página: ${error.message}`, 'error');
+                }
+            });
+        };
+
+        const handleSelectPage = (pageId) => {
+            const page = userPages.find(p => p.id === pageId);
+            if (page) {
+                setView('editor', page);
+            }
+        };
+
+        const handleDeletePage = (pageId) => {
+            renderMessageBox("¿Estás seguro de que quieres eliminar esta página?", 'confirm', async (confirmed) => {
+                if (confirmed) {
+                    try {
+                        console.log("Eliminando página con ID:", pageId);
+                        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'pages', pageId));
+                        await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'pages', pageId));
+                    } catch (error) {
+                        console.error("Error al eliminar la página:", error);
+                        renderMessageBox(`Error al eliminar la página: ${error.message}`, 'error');
+                    }
+                }
+            });
+        };
+        
+        const handleAddBlock = async () => {
+            const blockContentInput = document.getElementById('newBlockContent');
+            const blockTypeInput = document.getElementById('newBlockType');
+
+            if (!selectedPage || !blockContentInput.value.trim()) {
+                console.error("Error: selectedPage no está definido o el contenido está vacío.");
+                renderMessageBox("No se puede añadir un bloque vacío.", 'error');
+                return;
+            }
+
+            const blocksRef = collection(db, `artifacts/${appId}/public/data/pages/${selectedPage.id}/blocks`);
+            try {
+                await addDoc(blocksRef, {
+                    type: blockTypeInput.value,
+                    content: blockContentInput.value,
+                    order: pageBlocks.length,
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                });
+                blockContentInput.value = '';
+                blockTypeInput.value = 'text';
+            } catch (error) {
+                console.error("Error al añadir el bloque:", error);
+                renderMessageBox(`Error al añadir el bloque: ${error.message}`, 'error');
+            }
+        };
+
+        const handleUpdateBlock = async (blockId, newContent) => {
+            if (!selectedPage || !newContent.trim()) {
+                console.error("Error: selectedPage no está definido o el contenido está vacío.");
+                renderMessageBox("No se puede actualizar con contenido vacío.", 'error');
+                return;
+            }
+            try {
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'pages', selectedPage.id, 'blocks', blockId), {
+                    content: newContent,
+                    updatedAt: new Date(),
+                });
+            } catch (error) {
+                console.error("Error al actualizar el bloque:", error);
+                renderMessageBox(`Error al actualizar el bloque: ${error.message}`, 'error');
+            }
+        };
+
+        const handleDeleteBlock = (blockId) => {
+            renderMessageBox("¿Estás seguro de que quieres eliminar este bloque?", 'confirm', async (confirmed) => {
+                if (confirmed) {
+                    try {
+                        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'pages', selectedPage.id, 'blocks', blockId));
+                    } catch (error) {
+                        console.error("Error al eliminar el bloque:", error);
+                        renderMessageBox(`Error al eliminar el bloque: ${error.message}`, 'error');
+                    }
+                }
+            });
+        };
+
+        // --- FUNCIÓN DE RENDERIZADO DEL DOM ---
+        function renderLogin() {
+            root.innerHTML = `
+                <div class="flex flex-col items-center justify-center min-h-screen bg-gray-100 p-4">
+                    <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-md">
+                        <h1 class="text-3xl font-bold text-center text-gray-800 mb-6">Notion Lite</h1>
+                        <form id="loginForm" class="space-y-4">
+                            <input type="email" id="loginEmail" placeholder="Email (usuario)" class="w-full px-4 py-2 border rounded-md focus:ring-2 focus:ring-blue-500" required>
+                            <input type="password" id="loginPassword" placeholder="Contraseña" class="w-full px-4 py-2 border rounded-md focus:ring-2 focus:ring-blue-500" required>
+                            <button type="submit" class="w-full bg-blue-500 text-white font-semibold py-2 rounded-md hover:bg-blue-600 transition duration-300">Iniciar Sesión</button>
+                        </form>
+                        <div class="text-center text-sm text-gray-500 mt-4">
+                            <p>¿No tienes una cuenta?</p>
+                            <form id="registerForm" class="space-y-2 mt-2">
+                                <input type="email" id="newEmail" placeholder="Email para registro" class="w-full px-4 py-2 border rounded-md focus:ring-2 focus:ring-blue-500" required>
+                                <input type="password" id="newPassword" placeholder="Contraseña para registro" class="w-full px-4 py-2 border rounded-md focus:ring-2 focus:ring-blue-500" required>
+                                <button type="submit" class="w-full bg-gray-500 text-white font-semibold py-2 rounded-md hover:bg-gray-600 transition duration-300">Registrarse</button>
+                            </form>
+                        </div>
+                        ${currentUser && currentUser.uid ? `
+                        <p class="text-center text-gray-500 text-xs mt-4">
+                            ID de Usuario (para compartir): <br>
+                            <span class="font-mono bg-gray-200 px-2 py-1 rounded-md text-sm break-all">${currentUser.uid}</span>
+                        </p>` : ''}
+                    </div>
+                </div>
+            `;
+            document.getElementById('loginForm').addEventListener('submit', handleLogin);
+            document.getElementById('registerForm').addEventListener('submit', handleRegister);
+        }
+
+        function renderPages() {
+            root.innerHTML = `
+                <div class="flex flex-col items-center min-h-screen bg-gray-100 p-4">
+                    <div class="bg-white p-6 rounded-xl shadow-lg w-full max-w-xl mt-8">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-bold text-gray-800">Tus Páginas</h2>
+                            <button id="logoutBtn" class="bg-red-500 text-white font-semibold py-1 px-3 rounded-md hover:bg-red-600 transition duration-300 text-sm">Salir</button>
+                        </div>
+                        <button id="newPageBtn" class="w-full bg-blue-500 text-white font-semibold py-2 rounded-md hover:bg-blue-600 transition duration-300 mb-4">+ Nueva Página</button>
+                        <ul class="space-y-2" id="pagesList">
+                            ${userPages.map(page => `
+                                <li class="bg-gray-50 p-3 rounded-md flex justify-between items-center hover:bg-gray-100 transition-colors duration-200">
+                                    <span class="text-gray-700 font-medium cursor-pointer flex-grow" data-page-id="${page.id}">${page.title}</span>
+                                    <button class="bg-red-200 text-red-700 p-1 rounded-full hover:bg-red-300 transition-colors duration-200 ml-4" data-delete-id="${page.id}">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm6 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clip-rule="evenodd" /></svg>
+                                    </button>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                </div>
+            `;
+            document.getElementById('logoutBtn').addEventListener('click', handleLogout);
+            document.getElementById('newPageBtn').addEventListener('click', handleNewPage);
+            document.querySelectorAll('[data-page-id]').forEach(el => {
+                el.addEventListener('click', (e) => handleSelectPage(e.target.dataset.pageId));
+            });
+            document.querySelectorAll('[data-delete-id]').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    const pageId = e.target.closest('button').dataset.deleteId;
+                    handleDeletePage(pageId);
+                });
+            });
+        }
+        
+        function renderEditor() {
+            if (!selectedPage) return;
+            root.innerHTML = `
+                <div class="min-h-screen bg-gray-100 p-4 flex flex-col items-center">
+                    <div class="w-full max-w-4xl bg-white rounded-xl shadow-lg p-6">
+                        <div class="flex justify-between items-center mb-4">
+                            <button id="backBtn" class="bg-gray-200 text-gray-700 font-semibold py-1 px-3 rounded-md hover:bg-gray-300 transition duration-300 text-sm">← Volver</button>
+                            <input type="text" id="pageTitle" value="${selectedPage.title}" class="text-2xl font-bold w-full mx-4 text-center focus:outline-none" />
+                            <button id="logoutBtn" class="bg-red-500 text-white font-semibold py-1 px-3 rounded-md hover:bg-red-600 transition duration-300 text-sm">Salir</button>
+                        </div>
+                        <div class="space-y-4" id="blocksContainer">
+                            ${pageBlocks.map(block => {
+                                let blockContent = '';
+                                const deleteBtn = `
+                                    <button class="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity bg-red-200 text-red-700 p-1 rounded-full text-xs" data-delete-block-id="${block.id}">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm6 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clip-rule="evenodd" /></svg>
+                                    </button>
+                                `;
+                                switch(block.type) {
+                                    case 'heading':
+                                        blockContent = `<h2 class="text-2xl font-bold mb-2 w-full p-2 rounded-md focus:outline-none" contenteditable="true" data-block-id="${block.id}">${block.content}</h2>`;
+                                        break;
+                                    case 'list':
+                                        const items = block.content.split('\n').map(item => `<li>${item.replace(/^\* /, '')}</li>`).join('');
+                                        blockContent = `<ul class="list-disc w-full p-2 rounded-md focus:outline-none" contenteditable="true" data-block-id="${block.id}">${items}</ul>`;
+                                        break;
+                                    case 'checklist':
+                                        const checklistItems = block.content.split('\n').map(item => {
+                                            const checked = item.startsWith('[x]');
+                                            const text = item.replace(/^\[[x\s]\]\s*/, '');
+                                            return `
+                                                <div class="flex items-center mb-1 cursor-pointer" data-block-id="${block.id}" data-checklist-item="${text}" data-checked="${checked}">
+                                                    <input type="checkbox" ${checked ? 'checked' : ''} class="mr-2" />
+                                                    <span class="${checked ? 'line-through text-gray-500' : ''}">${text}</span>
+                                                </div>
+                                            `;
+                                        }).join('');
+                                        blockContent = `<div class="p-2 rounded-md">${checklistItems}</div>`;
+                                        break;
+                                    default:
+                                        blockContent = `<div class="text-gray-700 w-full p-2 rounded-md focus:outline-none" contenteditable="true" data-block-id="${block.id}">${block.content}</div>`;
+                                        break;
+                                }
+                                return `<div class="relative group">${blockContent}${deleteBtn}</div>`;
+                            }).join('')}
+                        </div>
+                        <div class="mt-8 pt-4 border-t border-gray-200">
+                            <div class="flex space-x-2 mb-2">
+                                <select id="newBlockType" class="px-2 py-1 border rounded-md">
+                                    <option value="text">Texto</option>
+                                    <option value="heading">Título</option>
+                                    <option value="list">Lista</option>
+                                    <option value="checklist">Checklist</option>
+                                </select>
+                                <input type="text" id="newBlockContent" placeholder="Escribe algo..." class="flex-grow px-4 py-2 border rounded-md focus:ring-2 focus:ring-blue-500" />
+                                <button id="addBlockBtn" class="bg-blue-500 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-600 transition duration-300">Añadir</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.getElementById('backBtn').addEventListener('click', () => setView('pages'));
+            document.getElementById('logoutBtn').addEventListener('click', handleLogout);
+            document.getElementById('pageTitle').addEventListener('blur', async (e) => {
+                const newTitle = e.target.value.trim();
+                if (newTitle && newTitle !== selectedPage.title) {
+                    try {
+                        // Update title in the PUBLIC collection for collaboration
+                        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'pages', selectedPage.id), { title: newTitle });
+                        // Update title in the PRIVATE collection for the user's page list
+                        await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'pages', selectedPage.id), { title: newTitle });
+                    } catch (error) {
+                        console.error("Error al actualizar el título de la página:", error);
+                        renderMessageBox(`Error al actualizar el título: ${error.message}`, 'error');
+                    }
+                }
+            });
+            document.getElementById('addBlockBtn').addEventListener('click', handleAddBlock);
+            document.getElementById('newBlockContent').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    handleAddBlock();
+                }
+            });
+
+            document.querySelectorAll('[contenteditable]').forEach(el => {
+                el.addEventListener('blur', (e) => {
+                    const blockId = e.target.dataset.blockId;
+                    handleUpdateBlock(blockId, e.target.innerText);
+                });
+            });
+
+            document.querySelectorAll('[data-delete-block-id]').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    const blockId = e.target.closest('button').dataset.deleteBlockId;
+                    handleDeleteBlock(blockId);
+                });
+            });
+
+            document.querySelectorAll('[data-checklist-item]').forEach(el => {
+                el.addEventListener('click', () => {
+                    const blockId = el.dataset.blockId;
+                    const block = pageBlocks.find(b => b.id === blockId);
+                    if (!block) return;
+                    
+                    const oldContent = block.content.split('\n');
+                    const newContent = oldContent.map(item => {
+                        const itemText = item.replace(/^\[[x\s]\]\s*/, '');
+                        if (itemText === el.dataset.checklistItem) {
+                            return item.startsWith('[x]') ? `[ ] ${itemText}` : `[x] ${itemText}`;
+                        }
+                        return item;
+                    }).join('\n');
+                    handleUpdateBlock(blockId, newContent);
+                });
+            });
+        }
+
+        // --- FUNCIÓN DE RENDERIZADO GLOBAL ---
+        function render() {
+            switch (view) {
+                case 'loading':
+                    root.innerHTML = `<div class="flex justify-center items-center min-h-screen"><p class="text-gray-500">Cargando...</p></div>`;
+                    break;
+                case 'login':
+                    renderLogin();
+                    break;
+                case 'pages':
+                    renderPages();
+                    break;
+                case 'editor':
+                    renderEditor();
+                    break;
+                default:
+                    root.innerHTML = `<div class="flex justify-center items-center min-h-screen text-gray-500">Vista no encontrada.</div>`;
+            }
+        }
+        
+        // Iniciar la aplicación
+        initFirebase();
+        render();
+    </script>
+</body>
+</html>
