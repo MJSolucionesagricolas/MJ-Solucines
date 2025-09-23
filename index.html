@@ -61,12 +61,10 @@
             appId: "1:383233579496:web:69d8c6e0dc9e18d9b32c5d"
         };
         const appId = firebaseConfig.projectId;
-        
-        // --- VITAL: CLAVE DE API DE GEMINI ---
-        // 1. Ve a https://aistudio.google.com/
-        // 2. Obtén tu clave de API gratuita
-        // 3. Pega la clave aquí, entre las comillas
-        const geminiApiKey = "AIzaSyCpTLIOWcXKA1KWufuvKbYtyPxCNOKCj4k"; // <-- ¡PEGA TU CLAVE AQUÍ!
+
+        // --- URL DE LA FUNCIÓN DE FIREBASE ---
+        // VITAL: Cuando despliegues la función en Firebase, reemplaza este valor con la URL que te dé.
+        const geminiFunctionUrl = "https://your-firebase-project.cloudfunctions.net/geminiApi";
         
         let app, auth, db;
         let currentUser = null;
@@ -202,7 +200,7 @@
 
         function startPageListeners() {
             if (!db || !selectedPage) return;
-
+            
             // Listener para los detalles de la página
             pageListenerUnsubscribe = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'pages', selectedPage.id), (docSnapshot) => {
                 if (docSnapshot.exists()) {
@@ -370,82 +368,64 @@
             });
         };
 
+        const callGeminiFunction = async (payload) => {
+            isLoading = true;
+            render();
+            try {
+                if (geminiFunctionUrl === "https://your-firebase-project.cloudfunctions.net/geminiApi") {
+                    throw new Error("La URL de la función de Gemini no está configurada.");
+                }
+                const response = await fetch(geminiFunctionUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!response.ok) {
+                    throw new Error(`Error del servidor: ${response.statusText}`);
+                }
+                const result = await response.json();
+                isLoading = false;
+                render();
+                return result.text;
+            } catch (error) {
+                isLoading = false;
+                render();
+                renderMessageBox(`Error al llamar a la función de Gemini: ${error.message}`, 'error');
+                console.error("Error en callGeminiFunction:", error);
+                return null;
+            }
+        };
+
         const handleSummarizePage = async () => {
             if (!selectedPage || pageBlocks.length === 0) {
                 renderMessageBox("La página no tiene contenido para resumir.", 'error');
                 return;
             }
-
             const allText = pageBlocks.map(block => block.content).join('\n');
             if (allText.trim().length < 50) {
                  renderMessageBox("El texto es demasiado corto para generar un resumen.", 'error');
                  return;
             }
-            
-            isLoading = true;
-            render();
-            if (!geminiApiKey) {
-                isLoading = false;
-                render();
-                renderMessageBox("Error: No se ha configurado la clave de la API de Gemini. Por favor, revisa el código.", 'error');
-                return;
-            }
-
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${geminiApiKey}`;
-
-            const userQuery = `Por favor, resume este texto de forma concisa:\n\n${allText}`;
-            const systemPrompt = "Actúa como un asistente de resumen. Proporciona un resumen conciso y claro del texto que se te da. El resumen debe estar en español y ser breve.";
-            
             const payload = {
-                contents: [{ parts: [{ text: userQuery }] }],
-                systemInstruction: {
-                    parts: [{ text: systemPrompt }]
-                }
+                action: "summarize",
+                text: allText
             };
-
-            let summaryContent = "No se pudo generar el resumen.";
-            let attempt = 0;
-            const maxAttempts = 3;
-            let success = false;
-
-            while (attempt < maxAttempts && !success) {
+            const summaryContent = await callGeminiFunction(payload);
+            if (summaryContent) {
+                const blocksRef = collection(db, `artifacts/${appId}/public/data/pages/${selectedPage.id}/blocks`);
                 try {
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
+                    await addDoc(blocksRef, {
+                        type: 'text',
+                        content: `**Resumen de la página (generado por Gemini)**\n${summaryContent}`,
+                        order: pageBlocks.length,
+                        createdAt: new Date(),
+                        updatedAt: new Date(),
                     });
-                    const result = await response.json();
-                    
-                    if (result.candidates && result.candidates.length > 0 && result.candidates[0].content && result.candidates[0].content.parts && result.candidates[0].content.parts.length > 0) {
-                        summaryContent = result.candidates[0].content.parts[0].text;
-                        success = true;
-                    }
                 } catch (error) {
-                    console.error("Error al llamar a la API de Gemini:", error);
-                    if (attempt < maxAttempts - 1) {
-                        await new Promise(res => setTimeout(res, Math.pow(2, attempt) * 1000));
-                    }
+                    console.error("Error al añadir el bloque de resumen:", error);
+                    renderMessageBox(`Error al añadir el bloque de resumen: ${error.message}`, 'error');
                 }
-                attempt++;
             }
-
-            isLoading = false;
-            
-            const blocksRef = collection(db, `artifacts/${appId}/public/data/pages/${selectedPage.id}/blocks`);
-            try {
-                await addDoc(blocksRef, {
-                    type: 'text',
-                    content: `**Resumen de la página (generado por Gemini)**\n${summaryContent}`,
-                    order: pageBlocks.length,
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                });
-            } catch (error) {
-                console.error("Error al añadir el bloque de resumen:", error);
-                renderMessageBox(`Error al añadir el bloque de resumen: ${error.message}`, 'error');
-            }
-            render();
         };
 
         const handleCorrectText = async () => {
@@ -453,84 +433,35 @@
                 renderMessageBox("La página no tiene contenido para corregir.", 'error');
                 return;
             }
-            
-            isLoading = true;
-            render();
-            if (!geminiApiKey) {
-                isLoading = false;
-                render();
-                renderMessageBox("Error: No se ha configurado la clave de la API de Gemini. Por favor, revisa el código.", 'error');
-                return;
-            }
-            
             const blocksToCorrect = pageBlocks.filter(b => b.type === 'text' || b.type === 'heading');
             if (blocksToCorrect.length === 0) {
-                isLoading = false;
-                render();
                 renderMessageBox("No hay bloques de texto o títulos para corregir.", 'info');
                 return;
             }
-
             const allText = blocksToCorrect.map(block => block.content).join('\n');
-
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${geminiApiKey}`;
-            const userQuery = `Corrige la ortografía y gramática de este texto. No añadas ni elimines información. Solo corrige los errores existentes:\n\n${allText}`;
-            const systemPrompt = "Actúa como un corrector de texto. Corrige la ortografía y gramática del texto que se te da. No incluyas explicaciones, solo el texto corregido.";
-            
             const payload = {
-                contents: [{ parts: [{ text: userQuery }] }],
-                systemInstruction: {
-                    parts: [{ text: systemPrompt }]
-                }
+                action: "correct",
+                text: allText
             };
-            
-            let correctedContent = allText;
-            let attempt = 0;
-            const maxAttempts = 3;
-            let success = false;
-
-            while (attempt < maxAttempts && !success) {
-                try {
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const result = await response.json();
-                    
-                    if (result.candidates && result.candidates.length > 0 && result.candidates[0].content && result.candidates[0].content.parts && result.candidates[0].content.parts.length > 0) {
-                        correctedContent = result.candidates[0].content.parts[0].text;
-                        success = true;
+            const correctedContent = await callGeminiFunction(payload);
+            if (correctedContent) {
+                 const correctedBlocks = correctedContent.split('\n\n').filter(Boolean); // split by paragraph
+                if (correctedBlocks.length === blocksToCorrect.length) {
+                    try {
+                        for (let i = 0; i < blocksToCorrect.length; i++) {
+                            await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'pages', selectedPage.id, 'blocks', blocksToCorrect[i].id), {
+                                content: correctedBlocks[i].replace(/\*\*/g, ''), // Remove potential bold markdown
+                                updatedAt: new Date(),
+                            });
+                        }
+                    } catch (error) {
+                        console.error("Error al actualizar los bloques con el texto corregido:", error);
+                        renderMessageBox(`Error al corregir y actualizar el texto: ${error.message}`, 'error');
                     }
-                } catch (error) {
-                    console.error("Error al llamar a la API de Gemini para corrección:", error);
-                    if (attempt < maxAttempts - 1) {
-                        await new Promise(res => setTimeout(res, Math.pow(2, attempt) * 1000));
-                    }
+                } else {
+                     renderMessageBox("No se pudo corregir el texto. Por favor, inténtalo de nuevo.", 'error');
                 }
-                attempt++;
             }
-
-            isLoading = false;
-
-            // Update blocks with corrected content
-            const correctedBlocks = correctedContent.split('\n\n').filter(Boolean); // split by paragraph
-            if (correctedBlocks.length === blocksToCorrect.length) {
-                try {
-                    for (let i = 0; i < blocksToCorrect.length; i++) {
-                        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'pages', selectedPage.id, 'blocks', blocksToCorrect[i].id), {
-                            content: correctedBlocks[i].replace(/\*\*/g, ''), // Remove potential bold markdown
-                            updatedAt: new Date(),
-                        });
-                    }
-                } catch (error) {
-                    console.error("Error al actualizar los bloques con el texto corregido:", error);
-                    renderMessageBox(`Error al corregir y actualizar el texto: ${error.message}`, 'error');
-                }
-            } else {
-                 renderMessageBox("No se pudo corregir el texto. Por favor, inténtalo de nuevo.", 'error');
-            }
-            render();
         };
 
         const handleExpandText = async () => {
@@ -538,76 +469,31 @@
                 renderMessageBox("La página no tiene contenido para expandir.", 'error');
                 return;
             }
-
             const allText = pageBlocks.map(block => block.content).join('\n');
             if (allText.trim().length < 50) {
                  renderMessageBox("El texto es demasiado corto para expandir.", 'error');
                  return;
             }
-            
-            isLoading = true;
-            render();
-            if (!geminiApiKey) {
-                isLoading = false;
-                render();
-                renderMessageBox("Error: No se ha configurado la clave de la API de Gemini. Por favor, revisa el código.", 'error');
-                return;
-            }
-
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${geminiApiKey}`;
-            const userQuery = `Expande el siguiente texto añadiendo un nuevo párrafo, manteniendo el tono y el tema. El texto es:\n\n${allText}`;
-            const systemPrompt = "Actúa como un escritor creativo y experto. Expande el texto dado con un párrafo nuevo, coherente con el contenido original. El nuevo párrafo debe estar en español y ser una continuación natural del texto.";
-            
             const payload = {
-                contents: [{ parts: [{ text: userQuery }] }],
-                systemInstruction: {
-                    parts: [{ text: systemPrompt }]
-                }
+                action: "expand",
+                text: allText
             };
-
-            let expandedContent = "No se pudo expandir el texto.";
-            let attempt = 0;
-            const maxAttempts = 3;
-            let success = false;
-
-            while (attempt < maxAttempts && !success) {
+            const expandedContent = await callGeminiFunction(payload);
+            if (expandedContent) {
+                const blocksRef = collection(db, `artifacts/${appId}/public/data/pages/${selectedPage.id}/blocks`);
                 try {
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
+                    await addDoc(blocksRef, {
+                        type: 'text',
+                        content: expandedContent,
+                        order: pageBlocks.length,
+                        createdAt: new Date(),
+                        updatedAt: new Date(),
                     });
-                    const result = await response.json();
-                    
-                    if (result.candidates && result.candidates.length > 0 && result.candidates[0].content && result.candidates[0].content.parts && result.candidates[0].content.parts.length > 0) {
-                        expandedContent = result.candidates[0].content.parts[0].text;
-                        success = true;
-                    }
                 } catch (error) {
-                    console.error("Error al llamar a la API de Gemini para expansión:", error);
-                    if (attempt < maxAttempts - 1) {
-                        await new Promise(res => setTimeout(res, Math.pow(2, attempt) * 1000));
-                    }
+                    console.error("Error al añadir el bloque de expansión:", error);
+                    renderMessageBox(`Error al añadir el bloque de expansión: ${error.message}`, 'error');
                 }
-                attempt++;
             }
-
-            isLoading = false;
-            
-            const blocksRef = collection(db, `artifacts/${appId}/public/data/pages/${selectedPage.id}/blocks`);
-            try {
-                await addDoc(blocksRef, {
-                    type: 'text',
-                    content: expandedContent,
-                    order: pageBlocks.length,
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                });
-            } catch (error) {
-                console.error("Error al añadir el bloque de expansión:", error);
-                renderMessageBox(`Error al añadir el bloque de expansión: ${error.message}`, 'error');
-            }
-            render();
         };
 
         // --- FUNCIÓN DE RENDERIZADO DEL DOM ---
@@ -836,3 +722,4 @@
     </script>
 </body>
 </html>
+
