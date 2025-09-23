@@ -61,7 +61,13 @@
             appId: "1:383233579496:web:69d8c6e0dc9e18d9b32c5d"
         };
         const appId = firebaseConfig.projectId;
-
+        
+        // --- VITAL: CLAVE DE API DE GEMINI ---
+        // 1. Ve a https://aistudio.google.com/
+        // 2. Obtén tu clave de API gratuita
+        // 3. Pega la clave aquí, entre las comillas
+        const geminiApiKey = "AIzaSyCpTLIOWcXKA1KWufuvKbYtyPxCNOKCj4k"; // <-- ¡PEGA TU CLAVE AQUÍ!
+        
         let app, auth, db;
         let currentUser = null;
         let view = 'loading'; // 'loading', 'login', 'pages', 'editor'
@@ -378,9 +384,14 @@
             
             isLoading = true;
             render();
+            if (!geminiApiKey) {
+                isLoading = false;
+                render();
+                renderMessageBox("Error: No se ha configurado la clave de la API de Gemini. Por favor, revisa el código.", 'error');
+                return;
+            }
 
-            const apiKey = "";
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${geminiApiKey}`;
 
             const userQuery = `Por favor, resume este texto de forma concisa:\n\n${allText}`;
             const systemPrompt = "Actúa como un asistente de resumen. Proporciona un resumen conciso y claro del texto que se te da. El resumen debe estar en español y ser breve.";
@@ -445,6 +456,12 @@
             
             isLoading = true;
             render();
+            if (!geminiApiKey) {
+                isLoading = false;
+                render();
+                renderMessageBox("Error: No se ha configurado la clave de la API de Gemini. Por favor, revisa el código.", 'error');
+                return;
+            }
             
             const blocksToCorrect = pageBlocks.filter(b => b.type === 'text' || b.type === 'heading');
             if (blocksToCorrect.length === 0) {
@@ -456,8 +473,7 @@
 
             const allText = blocksToCorrect.map(block => block.content).join('\n');
 
-            const apiKey = "";
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${geminiApiKey}`;
             const userQuery = `Corrige la ortografía y gramática de este texto. No añadas ni elimines información. Solo corrige los errores existentes:\n\n${allText}`;
             const systemPrompt = "Actúa como un corrector de texto. Corrige la ortografía y gramática del texto que se te da. No incluyas explicaciones, solo el texto corregido.";
             
@@ -531,9 +547,14 @@
             
             isLoading = true;
             render();
+            if (!geminiApiKey) {
+                isLoading = false;
+                render();
+                renderMessageBox("Error: No se ha configurado la clave de la API de Gemini. Por favor, revisa el código.", 'error');
+                return;
+            }
 
-            const apiKey = "";
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${geminiApiKey}`;
             const userQuery = `Expande el siguiente texto añadiendo un nuevo párrafo, manteniendo el tono y el tema. El texto es:\n\n${allText}`;
             const systemPrompt = "Actúa como un escritor creativo y experto. Expande el texto dado con un párrafo nuevo, coherente con el contenido original. El nuevo párrafo debe estar en español y ser una continuación natural del texto.";
             
@@ -659,7 +680,7 @@
             if (!selectedPage) return;
             const loadingIndicator = isLoading ? `
                 <div id="loadingIndicator">
-                    <p class="font-semibold text-gray-700">Generando resumen...</p>
+                    <p class="font-semibold text-gray-700">Generando...</p>
                 </div>
             ` : '';
             root.innerHTML = `
